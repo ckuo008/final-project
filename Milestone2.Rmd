@@ -1,0 +1,119 @@
+---
+title: "milestone2"
+author: "CHIA-YUN KUO"
+date: "11/22/2021"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+## Install Required packages
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import data
+
+We import `infiltrating` ductular carcinoma and `lobular` Carcinoma htseq counts files.
+
+```{r}
+directory='./data/'
+
+sampleFiles = grep("htseq.counts$", list.files('./data/', recursive = TRUE),value=TRUE)
+length(sampleFiles)
+```
+
+`806` htseq counts file been loaded
+but the number is incorrect, with further inspection, we found that the matching name pattern include 
+1. *htseq.counts
+2. *htseq_counts.txt
+By modification `grep` pattern to `"htseq.counts$|htseq_counts"`, all the htseq counts files, `740 infiltrating` and `135 lobular` been loaded.
+
+```{r}
+sampleFiles = grep("htseq.counts$|htseq_counts", list.files('./data/', recursive = TRUE),value=TRUE)
+length(sampleFiles)
+
+sampleNames <-sub(".*./(.*).htseq.counts.*","\\1",sampleFiles)
+sampleCondition <- sub("(.*.)/.*./.*.htseq.counts.*","\\1",sampleFiles)
+barplot(table(sampleCondition))
+
+sampleTable <- data.frame(sampleName = sampleFiles,
+                          fileName = sampleFiles,
+                          condition = sampleCondition)
+sampleTable$condition <- factor(sampleTable$condition)
+
+```
+
+``` {r}
+library("DESeq2")
+ddsHTSeq <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable,
+                                       directory = directory,
+                                       design= ~ condition)
+ddsHTSeq
+```
+
+pre-filtering reads count less than 9
+``` {r}
+dds <- ddsHTSeq[ rowSums(counts(ddsHTSeq)) > 9, ]
+dds$condition <- factor(dds$condition, levels = c("infiltrating","lobular"))
+dds$condition <- droplevels(dds$condition)
+```
+
+run Deseq2 and preview the result
+
+``` {r}
+dds <- DESeq(dds)
+res <- results(dds)
+res <- results(dds, contrast=c("condition","infiltrating","lobular"))
+res
+```
+
+## Log fold change shrinkage for visualization and ranking
+
+first preview the result name
+``` {r}
+resultsNames(dds)
+```
+
+than do the `LFC estimates`
+``` {r}
+resLFC <- lfcShrink(dds, coef="condition_lobular_vs_infiltrating", type="apeglm")
+resLFC
+```
+
+## p-values and adjusted p-values
+
+Order result table on *P value* in ascending order
+
+``` {r}
+resOrdered <- res[order(res$pvalue),]
+summary(res)
+```
+
+# Exploring and exporting results
+
+## MA-plot
+
+``` {r}
+plotMA(res, ylim=c(-2,2))
+```
+
+
+It is more useful visualize the MA-plot for the shrunken log2 fold changes, which remove the noise associated with log2 fold changes from low count genes without requiring arbitrary filtering thresholds.
+
+``` {r}
+plotMA(resLFC, ylim=c(-2,2))
+```
+
+## Alternative shrinkage estimators
+
+
+``` {r}
+# because we are interested in treated vs untreated, we set 'coef=2'
+resNorm <- lfcShrink(dds, coef=2, type="normal")
+resAsh <- lfcShrink(dds, coef=2, type="ashr")
+
+```
