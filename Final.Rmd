@@ -1,0 +1,296 @@
+---
+title: "milestone2"
+author: "CHIA-YUN KUO"
+date: "11/22/2021"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+## Install Required packages
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import data
+
+We import `infiltrating` ductular carcinoma and `lobular` Carcinoma htseq counts files.
+
+```{r}
+directory='./data/'
+
+sampleFiles = grep("htseq.counts$", list.files('./data/', recursive = TRUE),value=TRUE)
+length(sampleFiles)
+```
+
+`806` htseq counts file been loaded
+but the number is incorrect, with further inspection, we found that the matching name pattern include 
+1. *htseq.counts
+2. *htseq_counts.txt
+By modification `grep` pattern to `"htseq.counts$|htseq_counts"`, all the htseq counts files, `740 infiltrating` and `135 lobular` been loaded.
+
+```{r}
+sampleFiles = grep("htseq.counts$|htseq_counts", list.files('./data/', recursive = TRUE),value=TRUE)
+length(sampleFiles)
+
+sampleNames <-sub(".*./(.*).htseq.counts.*","\\1",sampleFiles)
+sampleCondition <- sub("(.*.)/.*./.*.htseq.counts.*","\\1",sampleFiles)
+barplot(table(sampleCondition))
+
+sampleTable <- data.frame(sampleName = sampleFiles,
+                          fileName = sampleFiles,
+                          condition = sampleCondition)
+sampleTable$condition <- factor(sampleTable$condition)
+
+```
+``` {r}
+infiltratingTable = sampleTable[sampleTable$condition == 'infiltrating',][1:120,]
+lobularTable = sampleTable[sampleTable$condition == 'lobular',][1:120,]
+filteredTable = rbind(infiltratingTable, lobularTable)
+filteredTable$condition
+```
+
+``` {r}
+library("DESeq2")
+ddsHTSeq <- DESeqDataSetFromHTSeqCount(sampleTable = filteredTable,
+                                       directory = directory,
+                                       design= ~ condition)
+ddsHTSeq
+```
+
+pre-filtering reads count less than 9
+``` {r}
+dds <- ddsHTSeq[ rowSums(counts(ddsHTSeq)) > 9, ]
+dds$condition <- factor(dds$condition, levels = c("infiltrating","lobular"))
+dds$condition <- droplevels(dds$condition)
+```
+
+run Deseq2 and preview the result
+
+``` {r}
+dds <- DESeq(dds)
+res <- results(dds)
+res <- results(dds, contrast=c("condition","infiltrating","lobular"))
+res
+```
+
+## Log fold change shrinkage for visualization and ranking
+
+first preview the result name
+``` {r}
+resultsNames(dds)
+```
+
+than do the `LFC estimates`
+``` {r}
+resLFC <- lfcShrink(dds, coef="condition_lobular_vs_infiltrating", type="apeglm")
+resLFC
+```
+
+## p-values and adjusted p-values
+
+Order result table on *P value* in ascending order
+
+``` {r}
+resOrdered <- res[order(res$pvalue),]
+summary(res)
+```
+
+# Exploring and exporting results
+
+## MA-plot
+
+``` {r}
+plotMA(res, ylim=c(-2,2))
+```
+
+
+It is more useful visualize the MA-plot for the shrunken log2 fold changes, which remove the noise associated with log2 fold changes from low count genes without requiring arbitrary filtering thresholds.
+
+``` {r}
+plotMA(resLFC, ylim=c(-2,2))
+```
+
+## Alternative shrinkage estimators
+
+
+``` {r}
+# because we are interested in treated vs untreated, we set 'coef=2'
+resNorm <- lfcShrink(dds, coef=2, type="normal")
+resAsh <- lfcShrink(dds, coef=2, type="ashr")
+
+```
+
+``` {r}
+par(mfrow=c(1,3), mar=c(4,4,2,1))
+xlim <- c(1,1e5); ylim <- c(-3,3)
+plotMA(resLFC, xlim=xlim, ylim=ylim, main="apeglm")
+plotMA(resNorm, xlim=xlim, ylim=ylim, main="normal")
+plotMA(resAsh, xlim=xlim, ylim=ylim, main="ashr")
+```
+
+
+### Plut Counts
+``` {r} 
+plotCounts(dds, gene=which.min(res$padj), intgroup="condition")
+```
+
+#### Customized Plotting
+
+``` {r}
+d <- plotCounts(dds, gene=which.min(res$padj), intgroup="condition", 
+                returnData=TRUE)
+library("ggplot2")
+ggplot(d, aes(x=condition, y=count)) + 
+  geom_point(position=position_jitter(w=0.1,h=0)) + 
+  scale_y_log10(breaks=c(60,100,400))
+```
+# Multi-factor designs
+
+``` {r}
+colData(dds)
+```
+
+# Data Transformations and visualization
+
+
+### Extracting transformed values
+
+``` {r}
+vsd <- vst(dds, blind=FALSE)
+head(assay(vsd), 10)
+```
+
+
+### Effects of transformations on the variance
+``` {r}
+# this gives log2(n + 1)
+ntd <- normTransform(dds)
+library("vsn")
+meanSdPlot(assay(ntd))
+```
+
+``` {r}
+meanSdPlot(assay(vsd))
+```
+
+## Data quality assessment by sample clustering and visualization
+
+### Heatmap of the count matrix
+
+
+``` {r}
+library("pheatmap")
+select <- order(rowMeans(counts(dds,normalized=TRUE)),
+                decreasing=TRUE)[1:20]
+df <- as.data.frame(colData(dds)[,c("condition","sizeFactor")])
+pheatmap(assay(ntd)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+```
+
+``` {r}
+pheatmap(assay(vsd)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+```
+
+### Heatmap of the sample-to-sample distances
+
+``` {r}
+sampleDists <- dist(t(assay(vsd)))
+library("RColorBrewer")
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vsd$condition, vsd$type, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+
+```
+
+``` {r}
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors,
+         scale="row",
+         )
+```
+
+## Principal component plot of the samples
+
+``` {r}
+plotPCA(vsd, intgroup=c("condition", "sizeFactor"))
+```
+
+# Variations to the standard workflow
+## Wald test individual steps
+
+``` {r}
+dds <- estimateSizeFactors(dds)
+dds <- estimateDispersions(dds)
+dds <- nbinomWaldTest(dds)
+```
+
+## Interactions
+``` {r}
+dds$group <- factor(paste0(dds$genotype, dds$condition))
+design(dds) <- ~ group
+dds <- DESeq(dds)
+resultsNames(dds)
+```
+
+``` {r}
+results(dds, contrast=c("group", "infiltrating", "lobular"))
+```
+
+### Extended section on shrinkage estimators
+``` {r}
+resApeT <- lfcShrink(dds, coef=2, type="apeglm", lfcThreshold=1)
+plotMA(resApeT, ylim=c(-3,3), cex=.8)
+abline(h=c(-1,1), col="dodgerblue", lwd=2)
+
+```
+
+# Recommendations for single-cell analysis
+
+## Approach to count outliers
+``` {r}
+par(mar=c(8,5,2,2))
+boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2)
+
+```
+
+## Dispersion plot and fitting alternatives
+
+``` {r}
+plotDispEsts(dds)
+```
+
+
+## Independent filtering of results
+
+``` {r}
+metadata(res)$alpha
+metadata(res)$filterThreshold
+plot(metadata(res)$filterNumRej, 
+     type="b", ylab="number of rejections",
+     xlab="quantiles of filter")
+lines(metadata(res)$lo.fit, col="red")
+abline(v=metadata(res)$filterTheta)
+```
+
+# Tests of log2 fold change above or below a threshold
+``` {r}
+par(mfrow=c(2,2),mar=c(2,2,1,1))
+ylim <- c(-2.5,2.5)
+resGA <- results(dds, lfcThreshold=.5, altHypothesis="greaterAbs")
+resLA <- results(dds, lfcThreshold=.5, altHypothesis="lessAbs")
+resG <- results(dds, lfcThreshold=.5, altHypothesis="greater")
+resL <- results(dds, lfcThreshold=.5, altHypothesis="less")
+drawLines <- function() abline(h=c(-.5,.5),col="dodgerblue",lwd=2)
+plotMA(resGA, ylim=ylim); drawLines()
+plotMA(resLA, ylim=ylim); drawLines()
+plotMA(resG, ylim=ylim); drawLines()
+plotMA(resL, ylim=ylim); drawLines()
+```
